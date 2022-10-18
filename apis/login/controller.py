@@ -1,3 +1,4 @@
+import traceback
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import JSONResponse
@@ -7,10 +8,10 @@ from jwt import PyJWTError
 from core.db import get_session
 from core.config import settings
 from schema.user import Token
-from models.user.models import User
+from models.user import User
 
 login_router = APIRouter()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api2/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/audit/v3/login")
 
 SESSION_KEY = ""
 
@@ -19,12 +20,10 @@ def authenticate_user(username: str, password: str):
     """
     登陆认证
     """
-    user = get_user(username)
-    if not user:
+    if user := get_user(username):
+        return user if user.check_password(password) else False
+    else:
         return False
-    if not user.check_password(password):
-        return False
-    return user
 
 
 def create_access_token(*, data: dict):
@@ -58,13 +57,14 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
     try:
         payload = jwt.decode(token, settings.SECRET_KEY)
         username: str = payload.get("sub")
         if username is None:
             raise credentials_exception
-    except PyJWTError:
-        raise credentials_exception
+    except PyJWTError as e:
+        raise credentials_exception from e
     user = get_user(username)
     if user is None:
         raise credentials_exception
@@ -76,8 +76,7 @@ async def get_current_active_user(current_user: User = Depends(get_current_user)
     校验用户是否被激活
     """
     if not current_user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_406_NOT_ACCEPTABLE, detail="用户未激活")
+        raise HTTPException(status_code=status.HTTP_406_NOT_ACCEPTABLE, detail="用户未激活")
     # Todo 判断用户是否有权限访问接口
     return current_user
 
@@ -101,6 +100,14 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
             headers={"WWW-Authenticate": "Bearer"},
         )
     access_token = create_access_token(data={"sub": user.username})
+    # 登陆成功后更新 最后登陆时间
+    db = get_session()
+    user = (
+        db.query(User)
+        .filter(User.username == user.username)
+        .update({"last_sign_in": datetime.now()})
+    )
+    db.commit()
     return JSONResponse({"access_token": access_token.decode(), "token_type": "bearer"})
 
 
