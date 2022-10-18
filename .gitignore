@@ -158,4 +158,4 @@ fly_command_sys.db
 .DS_Store
 /service/log/
 /logs/
-alembic
+alembic/
